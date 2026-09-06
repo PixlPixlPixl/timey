@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <rect x="4" y="4" width="120" height="120" rx="26" fill="#181818"/>
+  <!-- crown + buttons of the stopwatch -->
+  <rect x="53" y="18" width="22" height="12" rx="5" fill="#e8e8e8"/>
+  <rect x="42" y="24" width="9" height="6" rx="3" fill="#8a8a8a"/>
+  <rect x="77" y="24" width="9" height="6" rx="3" fill="#8a8a8a"/>
+  <!-- bezel -->
+  <circle cx="64" cy="78" r="42" fill="none" stroke="#e8e8e8" stroke-width="9"/>
+  <circle cx="64" cy="78" r="37" fill="#0e0e0e"/>
+  <!-- minute ticks (grayscale) -->
+  <g stroke="#9a9a9a" stroke-width="2" stroke-linecap="round">
+    <line x1="64" y1="47" x2="64" y2="53"/>
+    <line x1="95" y1="78" x2="89" y2="78"/>
+    <line x1="64" y1="109" x2="64" y2="103"/>
+    <line x1="33" y1="78" x2="39" y2="78"/>
+  </g>
+  <!-- hands -->
+  <line x1="64" y1="78" x2="64" y2="54" stroke="#f5f5f5" stroke-width="4" stroke-linecap="round"/>
+  <line x1="64" y1="78" x2="86" y2="78" stroke="#bdbdbd" stroke-width="3" stroke-linecap="round"/>
+  <circle cx="64" cy="78" r="4" fill="#8a8a8a"/>
+</svg>

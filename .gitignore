@@ -1,0 +1,51 @@
+# ── Environment & secrets ──────────────────────────────────────────
+# Local .env files and anything secret-ish must NEVER be committed.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+id_rsa*
+id_ed25519*
+secrets*.json
+credentials*.json
+
+# ── Python ──────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+.eggs/
+build/
+dist/
+develop-eggs/
+.venv/
+venv/
+env/
+.mypy_cache/
+.pytype/
+.ruff_cache/
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.tox/
+.nox/
+
+# ── Editors / IDEs / OS ─────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Tooling / misc ──────────────────────────────────────────────────
+*.log
+*.tmp
+.tmp/

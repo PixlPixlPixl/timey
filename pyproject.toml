@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "timey"
+version = "0.1.0"
+description = "A grayscale stopwatch for the Linux desktop (GTK 4 + Libadwaita)."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "PixlPixlPixl" }]
+keywords = ["stopwatch", "gtk4", "libadwaita", "linux", "gui"]
+classifiers = [
+    "Environment :: X11 Applications :: GTK",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Topic :: Utilities",
+]
+
+[project.scripts]
+timey = "timey.app:main"
+
+[tool.setuptools]
+packages = ["timey"]
+
+[tool.setuptools.package-data]
+timey = ["py.typed"]
