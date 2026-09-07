@@ -211,12 +211,30 @@ button.timey-iconbtn:hover {
   color: @@main@@;
 }
 
-/* ── grayscale chrome (view switcher, dialogs) ─────── */
-viewswitcher button:checked {
-  background-color: @@main@@;
-  color: @@onmain@@;
+/* ── grayscale chrome (header switch, dialogs) ─────── */
+.timey-switch {
+  border: 1px solid @@border@@;
+  border-radius: 999px;
+  padding: 3px;
 }
-viewswitcher button:checked label {
+
+button.timey-switchbtn {
+  background-image: none;
+  background-color: transparent;
+  border: none;
+  border-radius: 999px;
+  padding: 4px 16px;
+  font-weight: 600;
+  color: @@muted@@;
+}
+button.timey-switchbtn label {
+  color: inherit;
+}
+button.timey-switchbtn:hover {
+  color: @@main@@;
+}
+button.timey-switchbtn:checked {
+  background-color: @@main@@;
   color: @@onmain@@;
 }
 

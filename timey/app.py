@@ -205,11 +205,23 @@ class TimeyWindow(Adw.ApplicationWindow):
 
         # Two tools: the stopwatch and the (multi) countdown timers.
         self.stack = Adw.ViewStack()
-        self.stack.add_titled(self._build_stopwatch_page(), "stopwatch", "Stopwatch")
-        self.stack.add_titled(self._build_timers_page(), "timers", "Timer")
+        self.stack.add_named(self._build_stopwatch_page(), "stopwatch")
+        self.stack.add_named(self._build_timers_page(), "timers")
 
-        switcher = Adw.ViewSwitcher(stack=self.stack)
-        header.set_title_widget(switcher)
+        # Text-only tool switcher (no icons anywhere, by design).
+        switch_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
+        switch_box.add_css_class("timey-switch")
+        self._mode_buttons: list[Gtk.ToggleButton] = []
+        for title, page in (("Stopwatch", "stopwatch"), ("Timer", "timers")):
+            button = Gtk.ToggleButton(label=title)
+            button.add_css_class("timey-switchbtn")
+            if self._mode_buttons:
+                button.set_group(self._mode_buttons[0])
+            button.connect("toggled", self._on_mode_toggled, page)
+            self._mode_buttons.append(button)
+            switch_box.append(button)
+        self._mode_buttons[0].set_active(True)
+        header.set_title_widget(switch_box)
         toolbar.add_top_bar(header)
 
         # Theme toggle (dark ⇄ light) + about button.
@@ -621,6 +633,10 @@ class TimeyWindow(Adw.ApplicationWindow):
         return False
 
     # ── header actions ───────────────────────────────────────────────
+    def _on_mode_toggled(self, button: Gtk.ToggleButton, page: str) -> None:
+        if button.get_active():
+            self.stack.set_visible_child_name(page)
+
     def _on_toggle_theme(self, *_args) -> None:
         self._apply_theme("light" if self._theme == "dark" else "dark", persist=True)
 
