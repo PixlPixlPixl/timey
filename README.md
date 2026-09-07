@@ -21,24 +21,54 @@ default, with a one-click toggle for light mode.
 
 ## Requirements
 
-Timey needs Python 3 with GObject introspection bindings plus GTK 4 and
-Libadwaita. On Arch-based systems (including Omarchy):
+Timey is pure Python on top of your distro's GTK 4 / Libadwaita /
+PyGObject packages — it has **zero** pip dependencies. Install those system
+packages first:
+
+| Distro          | Install command                                        |
+| --------------- | ------------------------------------------------------ |
+| Arch / Omarchy  | `sudo pacman -S python-gobject gtk4 libadwaita`        |
+| Debian / Ubuntu | `sudo apt install python3-gi gir1.2-gtk-4.0 gir1.2-adw-1` |
+| Fedora          | `sudo dnf install python3-gobject gtk4 libadwaita`     |
+
+`./install.sh` checks for these and prints the right command if they're missing.
+
+## Install from source (recommended)
+
+Find it on GitHub, clone, and install — no root, no `pip`, nothing to compile:
 
 ```bash
-sudo pacman -S python-gobject gtk4 libadwaita
+git clone https://github.com/PixlPixlPixl/Timey.git
+cd Timey
+./install.sh
 ```
 
-> Runtime system packages only — Timey itself has **zero** pip dependencies.
+The installer targets **your user account** (`~/.local`, no `sudo` needed):
 
-## Run it
+- copies the pure-Python `timey` package to `~/.local/lib/timey/`
+- puts a `timey` launcher in `~/.local/bin/`
+- registers a **Timey** entry in your app grid plus the stopwatch icon
+  (`~/.local/share/applications/` and `~/.local/share/icons/`)
 
-From a checkout of the repository:
+Start it with `timey` in a terminal or from your app launcher.
+
+Useful variations:
+
+```bash
+PREFIX=$HOME/.local ./install.sh   # pick a different prefix
+./install.sh --uninstall           # remove everything it installed
+```
+
+## Run from a checkout (development)
+
+With the system packages from [Requirements](#requirements) in place, run
+straight from the source tree:
 
 ```bash
 python3 -m timey
 ```
 
-Or install it as a command (entry point `timey`):
+Or install it as an editable console command with pip:
 
 ```bash
 pip install -e .
@@ -49,17 +79,6 @@ Run the engine unit tests with:
 
 ```bash
 python3 -m unittest discover -s tests
-```
-
-## Desktop integration (optional)
-
-To get a launcher entry in your app grid:
-
-```bash
-install -Dm644 packaging/io.github.pixlpixlpixl.Timey.svg \
-  ~/.local/share/icons/hicolor/scalable/apps/io.github.pixlpixlpixl.Timey.svg
-install -Dm644 packaging/timey.desktop ~/.local/share/applications/
-update-desktop-database ~/.local/share/applications 2>/dev/null || true
 ```
 
 ## Keys & shortcuts
@@ -105,6 +124,7 @@ This repository is meant to be made public eventually. Guardrails included:
 ## Project layout
 
 ```
+install.sh     user installer (no root/pip; also handles --uninstall)
 timey/
   app.py        GTK 4 / Libadwaita application & window
   stopwatch.py  pure-Python stopwatch engine (unit-tested)
@@ -113,7 +133,7 @@ timey/
   prefs.py      persisted preferences (INI)
   env.py        tiny .env loader
 tests/          engine unit tests
-packaging/      desktop entry + app icon
+packaging/      desktop entry + app icon (used by install.sh)
 ```
 
 ## License
