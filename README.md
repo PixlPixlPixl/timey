@@ -1,19 +1,21 @@
 # Timey ⏱
 
-A deliberately **grayscale** stopwatch for the Linux desktop — built with
-Python, GTK 4 and Libadwaita. Dark mode by default, with a one-click
-toggle for light mode.
+A deliberately **grayscale** stopwatch **and multi-countdown timer** for the
+Linux desktop — built with Python, GTK 4 and Libadwaita. Dark mode by
+default, with a one-click toggle for light mode.
 
 <p align="center"><em>Monochrome by design. No hue, no accent, no fuss.</em></p>
 
 ## Features
 
-- Monotonic-clock stopwatch with centisecond precision (`HH:MM:SS.cc`)
-- Lap recording (per-lap splits + cumulative times)
+- **Stopwatch** — monotonic-clock timing with centisecond precision
+  (`HH:MM:SS.cc`) and lap recording (per-lap splits + cumulative times)
+- **Countdown timers** — run **any number at once**; each timer can have a
+  name, live progress bar, and fires a desktop notification when finished
 - **Grayscale styling** in both color schemes — the palette is injected at
   runtime, so the app stays neutral even where accent colors aren't supported
 - **Dark mode by default** with a persistent dark ⇄ light toggle
-- Keyboard shortcuts: `Space` start/pause · `L` lap · `R` reset
+- About dialog links straight to the **Github** repository
 - Preferences persisted to `~/.config/timey/config.ini` (no GSettings
   schema needed to run from a checkout)
 
@@ -62,11 +64,16 @@ update-desktop-database ~/.local/share/applications 2>/dev/null || true
 
 ## Keys & shortcuts
 
+Keyboard shortcuts act on the **Stopwatch** page:
+
 | Key     | Action        |
 | ------- | ------------- |
 | `Space` | Start / pause / resume |
 | `L`     | Record a lap  |
 | `R`     | Reset         |
+
+On the **Timers** page, use `+ Add Timer` to add as many countdowns as you
+want; each card has its own Start/Pause, Reset and delete button.
 
 The theme toggle (sun/moon) lives in the header bar. Your choice is saved
 and remembered on the next launch.
@@ -100,7 +107,8 @@ This repository is meant to be made public eventually. Guardrails included:
 ```
 timey/
   app.py        GTK 4 / Libadwaita application & window
-  stopwatch.py  pure-Python timing engine (unit-tested)
+  stopwatch.py  pure-Python stopwatch engine (unit-tested)
+  countdown.py  pure-Python countdown engine (unit-tested)
   style.py      grayscale stylesheet generator
   prefs.py      persisted preferences (INI)
   env.py        tiny .env loader

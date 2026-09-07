@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "timey"
-version = "0.1.0"
-description = "A grayscale stopwatch for the Linux desktop (GTK 4 + Libadwaita)."
+version = "0.2.0"
+description = "A grayscale stopwatch and countdown timers for the Linux desktop (GTK 4 + Libadwaita)."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -25,6 +25,3 @@ timey = "timey.app:main"
 
 [tool.setuptools]
 packages = ["timey"]
-
-[tool.setuptools.package-data]
-timey = ["py.typed"]

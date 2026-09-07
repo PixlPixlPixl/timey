@@ -143,6 +143,93 @@ button.timey-start {
   color: @@muted@@;
   font-size: 13px;
 }
+
+/* ── countdown cards ────────────────────────────────── */
+.timey-card {
+  background-color: @@panel@@;
+  border: 1px solid @@border@@;
+  border-radius: 16px;
+  padding: 14px 18px;
+}
+
+.timey-tname {
+  font-weight: 700;
+  color: @@main@@;
+}
+.timey-tstatus {
+  font-size: 11px;
+  font-weight: 700;
+  color: @@muted@@;
+}
+.timey-tstatus.running,
+.timey-tstatus.finished {
+  color: @@main@@;
+}
+
+.timey-ttotal {
+  font-family: monospace;
+  font-size: 12px;
+  color: @@muted@@;
+}
+
+.timey-tleft {
+  font-family: monospace;
+  font-size: 42px;
+  font-weight: 300;
+  color: @@main@@;
+}
+
+.timey-card progressbar trough {
+  background-color: @@border@@;
+  border-radius: 999px;
+  min-height: 8px;
+}
+.timey-card progressbar progress {
+  background-color: @@main@@;
+  border-radius: 999px;
+  min-height: 8px;
+}
+
+button.timey-sm {
+  padding: 6px 16px;
+}
+
+button.timey-primary label,
+button.timey-ghost label {
+  color: inherit;
+}
+
+button.timey-iconbtn {
+  background-color: transparent;
+  color: @@muted@@;
+  border-radius: 999px;
+  padding: 4px;
+  background-image: none;
+}
+button.timey-iconbtn:hover {
+  background-color: @@panel_hover@@;
+  color: @@main@@;
+}
+
+/* ── grayscale chrome (view switcher, dialogs) ─────── */
+viewswitcher button:checked {
+  background-color: @@main@@;
+  color: @@onmain@@;
+}
+viewswitcher button:checked label {
+  color: @@onmain@@;
+}
+
+button.suggested-action {
+  background-color: @@main@@;
+  color: @@onmain@@;
+}
+button.suggested-action:hover {
+  background-color: @@main_hover@@;
+}
+button.suggested-action:active {
+  background-color: @@main_active@@;
+}
 """
 
 

@@ -2,7 +2,7 @@
 Type=Application
 Name=Timey
 GenericName=Stopwatch
-Comment=A grayscale stopwatch for the Linux desktop
+Comment=A grayscale stopwatch and countdown timers for the Linux desktop
 Exec=timey
 Icon=io.github.pixlpixlpixl.Timey
 Terminal=false
