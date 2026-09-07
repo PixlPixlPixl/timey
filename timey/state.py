@@ -57,6 +57,15 @@ def default_background_enabled() -> bool:
     return os.environ.get(ENV_BACKGROUND_DEFAULT) == "1"
 
 
+def default_launch_on_login() -> bool:
+    """First-launch "start Timey at login" preference.
+
+    Follows the same install-default as the background setting so an
+    installed Timey keeps its historic behaviour of starting at login.
+    """
+    return default_background_enabled()
+
+
 def default_theme() -> str:
     """First-launch theme: TIMEY_THEME env, legacy config.ini, then dark."""
     value = normalize_theme(os.environ.get(ENV_THEME))
@@ -90,6 +99,7 @@ class State:
         *,
         theme: str = "dark",
         background: bool = False,
+        launch_on_login: bool = False,
         sound: bool = True,
         alarms: list[Alarm] | None = None,
         timers: list[Countdown] | None = None,
@@ -98,6 +108,7 @@ class State:
     ) -> None:
         self.theme = normalize_theme(theme)
         self.background = bool(background)
+        self.launch_on_login = bool(launch_on_login)
         self.sound = bool(sound)
         self.alarms = alarms if alarms is not None else []
         self.timers = timers if timers is not None else []
@@ -118,6 +129,7 @@ class State:
         return cls(
             theme=default_theme(),
             background=default_background_enabled(),
+            launch_on_login=default_launch_on_login(),
         )
 
     @classmethod
@@ -152,9 +164,17 @@ class State:
         if not zones:
             zones = ["Local"]
 
+        background = bool(settings.get("background", False))
+        # Migrate older configs: autostart used to follow the background
+        # setting, so default the new toggle to whatever it was.
+        launch_on_login = bool(
+            settings.get("launch_on_login", background)
+        )
+
         state = cls(
             theme=normalize_theme(settings.get("theme")),
-            background=bool(settings.get("background", False)),
+            background=background,
+            launch_on_login=launch_on_login,
             sound=settings.get("sound", True) if "sound" in settings else True,
             alarms=alarms,
             timers=timers,
@@ -178,6 +198,7 @@ class State:
             "settings": {
                 "theme": self.theme,
                 "background": self.background,
+                "launch_on_login": self.launch_on_login,
                 "sound": self.sound,
             },
             "alarms": [alarm.to_dict() for alarm in self.alarms],

@@ -13,7 +13,8 @@ and Libadwaita. Dark mode by default, with a light-mode toggle.
 - **World clock** — current time in your timezone (default) and any
   cities you add (shown together with each city's timezone).
 - **Runs in the background** — alarms and timers keep going when the
-  window is closed (on by default when installed).
+  window is closed (on by default when installed). A separate setting
+  starts Timey automatically at login.
 - **Remembers everything** — alarms, timers, stopwatch history and
   settings are restored on the next launch.
 

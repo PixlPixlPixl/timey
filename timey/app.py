@@ -1148,11 +1148,21 @@ class TimeyWindow(Adw.ApplicationWindow):
         background_row.set_title("Keep running in the background")
         background_row.set_subtitle(
             "Alarms and timers keep going — with desktop notifications and "
-            "sound — even when the window is closed. Starts automatically at login."
+            "sound — even when the window is closed."
         )
         background_row.set_active(self.state.background)
         background_row.connect("notify::active", self._on_background_toggled, background_row)
         group.add(background_row)
+
+        login_row = Adw.SwitchRow()
+        login_row.set_title("Launch Timey at login")
+        login_row.set_subtitle(
+            "Start Timey automatically (in the background) when you log in, "
+            "so alarms and timers are always ready."
+        )
+        login_row.set_active(self.state.launch_on_login)
+        login_row.connect("notify::active", self._on_launch_toggled, login_row)
+        group.add(login_row)
 
         sound_row = Adw.SwitchRow()
         sound_row.set_title("Play alert sounds")
@@ -1179,6 +1189,9 @@ class TimeyWindow(Adw.ApplicationWindow):
 
     def _on_background_toggled(self, row: Adw.SwitchRow, _param, _data=None) -> None:
         self.app.set_background_enabled(row.get_active())
+
+    def _on_launch_toggled(self, row: Adw.SwitchRow, _param, _data=None) -> None:
+        self.app.set_launch_on_login(row.get_active())
 
     def _on_sound_toggled(self, row: Adw.SwitchRow, _param, _data=None) -> None:
         self.state.sound = row.get_active()
@@ -1598,12 +1611,18 @@ class TimeyApplication(Adw.Application):
         if self.window is not None:
             self.window._on_alarm_changed()
 
-    # ── persistence / background ─────────────────────────────────────
+    # ── persistence / background / autostart ─────────────────────────
     def save_state(self) -> None:
         self.state.save()
 
     def set_background_enabled(self, enabled: bool) -> None:
+        """Toggle whether closing the window keeps Timey running hidden."""
         self.state.background = bool(enabled)
+        self.save_state()
+
+    def set_launch_on_login(self, enabled: bool) -> None:
+        """Toggle the XDG autostart entry (start Timey at login)."""
+        self.state.launch_on_login = bool(enabled)
         self.save_state()
         self._sync_autostart()
 
@@ -1614,7 +1633,7 @@ class TimeyApplication(Adw.Application):
         self._sync_autostart()
 
     def _sync_autostart(self) -> None:
-        if self.state.background:
+        if self.state.launch_on_login:
             self._write_autostart()
         else:
             self._remove_autostart()
