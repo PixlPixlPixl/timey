@@ -13,6 +13,7 @@ Everything is persisted to ``~/.config/timey/state.json``.
 
 from __future__ import annotations
 
+import functools
 import os
 import shlex
 import shutil
@@ -42,7 +43,8 @@ APP_NAME = "Timey"
 VERSION = "0.3.0"
 WEBSITE = "https://github.com/PixlPixlPixl/Timey"
 
-TICK_MS = 10        # refresh rate of the live displays
+TICK_MS = 10          # refresh rate of the live displays
+RING_MS = 1200        # how often the alarm sound repeats while ringing
 AUTOSAVE_TICKS = 500  # persist running engines every ~5 s
 
 _CSS_PRIORITY = Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
@@ -94,6 +96,12 @@ class _TimerCard:
         self.total_label = Gtk.Label(label=format_elapsed(countdown.duration))
         self.total_label.add_css_class("timey-ttotal")
         header.append(self.total_label)
+
+        sound_button = Gtk.Button(icon_name="audio-volume-high-symbolic")
+        sound_button.add_css_class("timey-iconbtn")
+        sound_button.set_tooltip_text("Change the sound this timer plays")
+        sound_button.connect("clicked", self._on_sound)
+        header.append(sound_button)
 
         delete_button = Gtk.Button(icon_name="edit-delete-symbolic")
         delete_button.add_css_class("timey-iconbtn")
@@ -153,6 +161,9 @@ class _TimerCard:
     def _on_delete(self, _button: Gtk.Button) -> None:
         self.window.remove_timer(self)
 
+    def _on_sound(self, _button: Gtk.Button) -> None:
+        self.window._timer_sound_dialog(self.countdown).present(self.window)
+
     # ── display ──────────────────────────────────────────────────────
     def update_time(self) -> None:
         """Lightweight per-tick update (time + progress only)."""
@@ -197,6 +208,8 @@ class _TimerCard:
 # ─────────────────────────────────────────────────────────────────────
 def _alarm_status_text(alarm: Alarm) -> str:
     """Subtitle for an alarm card."""
+    if alarm.ringing:
+        return "Ringing — press Stop to silence"
     if not alarm.enabled:
         if not alarm.repeat and alarm.last_fired is not None:
             return "Rang"
@@ -242,28 +255,45 @@ class _AlarmCard:
         left.append(self.meta_label)
         row.append(left)
 
-        self.enabled_switch = Gtk.Switch()
-        self.enabled_switch.set_valign(Gtk.Align.CENTER)
-        self.enabled_switch.set_active(alarm.enabled)
-        self.enabled_switch.set_tooltip_text("Enable / disable this alarm")
-        self.enabled_switch.connect("notify::active", self._on_enabled_changed)
-        row.append(self.enabled_switch)
+        controls = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        controls.set_valign(Gtk.Align.CENTER)
+
+        if alarm.ringing:
+            stop_button = Gtk.Button(label="Stop")
+            stop_button.add_css_class("timey-btn")
+            stop_button.add_css_class("timey-primary")
+            stop_button.add_css_class("timey-sm")
+            stop_button.set_tooltip_text("Stop the alarm")
+            stop_button.connect("clicked", self._on_stop)
+            controls.append(stop_button)
+        else:
+            self.enabled_switch = Gtk.Switch()
+            self.enabled_switch.set_valign(Gtk.Align.CENTER)
+            self.enabled_switch.set_active(alarm.enabled)
+            self.enabled_switch.set_tooltip_text("Enable / disable this alarm")
+            self.enabled_switch.connect("notify::active", self._on_enabled_changed)
+            controls.append(self.enabled_switch)
 
         edit_button = Gtk.Button(icon_name="document-edit-symbolic")
         edit_button.add_css_class("timey-iconbtn")
         edit_button.set_tooltip_text("Edit this alarm")
         edit_button.connect("clicked", self._on_edit)
-        row.append(edit_button)
+        controls.append(edit_button)
 
         delete_button = Gtk.Button(icon_name="edit-delete-symbolic")
         delete_button.add_css_class("timey-iconbtn")
         delete_button.set_tooltip_text("Delete this alarm")
         delete_button.connect("clicked", self._on_delete)
-        row.append(delete_button)
+        controls.append(delete_button)
+
+        row.append(controls)
 
         card.append(row)
 
     # ── handlers ─────────────────────────────────────────────────────
+    def _on_stop(self, _button: Gtk.Button) -> None:
+        self.window._stop_alarm(self.alarm)
+
     def _on_enabled_changed(self, switch: Gtk.Switch, _param) -> None:
         self.alarm.set_enabled(switch.get_active())
         self.window._on_alarm_changed()
@@ -672,9 +702,15 @@ class TimeyWindow(Adw.ApplicationWindow):
         self._alarm_editor().present(self)
 
     def _edit_alarm(self, alarm: Alarm) -> None:
+        if alarm.ringing:
+            self.app.dismiss_alarm(alarm)  # stop ringing before editing
         self._alarm_editor(alarm).present(self)
 
+    def _stop_alarm(self, alarm: Alarm) -> None:
+        self.app.dismiss_alarm(alarm)
+
     def _delete_alarm(self, alarm: Alarm) -> None:
+        self.app.dismiss_alarm(alarm)  # silence it if it is ringing
         if alarm in self.state.alarms:
             self.state.alarms.remove(alarm)
         self._save()
@@ -889,13 +925,155 @@ class TimeyWindow(Adw.ApplicationWindow):
     def _refresh_timers_empty_state(self) -> None:
         self.timers_empty.set_visible(not bool(self.timer_cards))
 
+    # ── timer sound picker ───────────────────────────────────────────
+    def _timer_sound_dialog(self, countdown: Countdown) -> Adw.AlertDialog:
+        """Dialog to pick (and preview) the sound a timer plays."""
+        choices = list(alerts.sound_options())
+        if alerts.spec_is_file(countdown.sound):
+            choices.append((countdown.sound, alerts.spec_label(countdown.sound)))
+        labels = [label for _spec, label in choices]
+
+        string_list = Gtk.StringList.new(labels)
+        dropdown = Gtk.DropDown.new(string_list)
+        selected = 0
+        for index, (spec, _label) in enumerate(choices):
+            if spec == countdown.sound:
+                selected = index
+                break
+        dropdown.set_selected(selected)
+        dropdown.set_hexpand(True)
+        dropdown.set_valign(Gtk.Align.CENTER)
+
+        preview_button = Gtk.Button(label="Preview")
+        preview_button.add_css_class("timey-btn")
+        preview_button.add_css_class("timey-ghost")
+        preview_button.add_css_class("timey-sm")
+
+        def on_preview(_button: Gtk.Button) -> None:
+            index = dropdown.get_selected()
+            spec = choices[min(index, len(choices) - 1)][0]
+            alerts.play_spec(spec, True)
+
+        preview_button.connect("clicked", on_preview)
+
+        custom_button = Gtk.Button(label="Custom file…")
+        custom_button.add_css_class("timey-btn")
+        custom_button.add_css_class("timey-ghost")
+        custom_button.add_css_class("timey-sm")
+
+        def on_custom(_button: Gtk.Button) -> None:
+            self._pick_timer_sound_file(dropdown, choices, string_list)
+
+        custom_button.connect("clicked", on_custom)
+
+        button_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        button_row.set_halign(Gtk.Align.CENTER)
+        button_row.set_margin_top(8)
+        button_row.append(preview_button)
+        button_row.append(custom_button)
+
+        group = Adw.PreferencesGroup()
+        row = Adw.ActionRow()
+        row.set_title("Sound")
+        row.set_subtitle(alerts.spec_label(countdown.sound))
+        group.add(row)
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        box.append(group)
+        box.append(dropdown)
+        box.append(button_row)
+
+        dialog = Adw.AlertDialog()
+        dialog.set_heading("Timer sound")
+        dialog.set_body("What should play when this timer finishes?")
+        dialog.set_extra_child(box)
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("save", "Save")
+        dialog.set_response_appearance("save", Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_default_response("save")
+        dialog.set_close_response("cancel")
+        dialog.connect("response", self._on_timer_sound_response, countdown, dropdown, choices)
+        return dialog
+
+    def _on_timer_sound_response(
+        self,
+        _dialog: Adw.AlertDialog,
+        response: str,
+        countdown: Countdown,
+        dropdown: Gtk.DropDown,
+        choices: list[tuple[str, str]],
+    ) -> None:
+        if response != "save":
+            return
+        index = dropdown.get_selected()
+        if 0 <= index < len(choices):
+            countdown.sound = choices[index][0]
+        self._save()
+
+    def _pick_timer_sound_file(
+        self,
+        dropdown: Gtk.DropDown,
+        choices: list[tuple[str, str]],
+        string_list: Gtk.StringList,
+    ) -> None:
+        """Browse for a custom audio file for a timer's sound."""
+        chooser = Gtk.FileDialog.new()
+        chooser.set_title("Choose an alert sound")
+        filters = Gio.ListStore.new(Gtk.FileFilter)
+        audio = Gtk.FileFilter.new()
+        audio.set_name("Audio files")
+        for pattern in ("*.wav", "*.ogg", "*.oga", "*.mp3", "*.flac", "*.m4a"):
+            audio.add_pattern(pattern)
+        everything = Gtk.FileFilter.new()
+        everything.set_name("All files")
+        everything.add_pattern("*")
+        filters.append(audio)
+        filters.append(everything)
+        chooser.set_filters(filters)
+        chooser.set_default_filter(audio)
+        chooser.open(
+            self,
+            None,
+            functools.partial(
+                self._on_sound_file_picked, dropdown, choices, string_list
+            ),
+        )
+
+    def _on_sound_file_picked(
+        self,
+        dropdown: Gtk.DropDown,
+        choices: list[tuple[str, str]],
+        string_list: Gtk.StringList,
+        chooser: Gtk.FileDialog,
+        result: Gio.AsyncResult,
+    ) -> None:
+        try:
+            file = chooser.open_finish(result)
+        except GLib.Error:
+            return
+        path = file.get_path()
+        if not path:
+            return
+        spec = f"file:{path}"
+        for index, (candidate, _label) in enumerate(choices):
+            if candidate == spec:
+                selected = index
+                break
+        else:
+            choices.append((spec, alerts.spec_label(spec)))
+            string_list.append(alerts.spec_label(spec))
+            selected = len(choices) - 1
+        dropdown.set_selected(selected)
+        alerts.play_spec(spec, True)  # instant preview
+
     # ── world clock logic ────────────────────────────────────────────
     def _on_add_zone(self, *_args) -> None:
         self._zone_picker().present(self)
 
     def _zone_picker(self) -> Adw.AlertDialog:
-        options = [("This computer (local timezone)", "Local")]
-        options.extend(worldclock.CITIES)
+        local_name = worldclock.local_zone_name() or worldclock.local_offset_label()
+        options = [(f"This computer — {local_name}", "Local")]
+        options.extend((f"{city} — {zone}", zone) for city, zone in worldclock.CITIES)
 
         dropdown = Gtk.DropDown.new_from_strings([label for label, _zone in options])
         dropdown.set_selected(0)
@@ -983,16 +1161,6 @@ class TimeyWindow(Adw.ApplicationWindow):
         sound_row.connect("notify::active", self._on_sound_toggled, sound_row)
         group.add(sound_row)
 
-        theme_row = Adw.ActionRow()
-        theme_row.set_title("Color scheme")
-        theme_row.set_subtitle("Dark or light.")
-        theme_button = Gtk.Button(label="Switch")
-        theme_button.add_css_class("timey-btn")
-        theme_button.add_css_class("timey-sm")
-        theme_button.connect("clicked", self._on_settings_theme_clicked)
-        theme_row.add_suffix(theme_button)
-        group.add(theme_row)
-
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         box.append(group)
 
@@ -1014,10 +1182,10 @@ class TimeyWindow(Adw.ApplicationWindow):
 
     def _on_sound_toggled(self, row: Adw.SwitchRow, _param, _data=None) -> None:
         self.state.sound = row.get_active()
+        if not self.state.sound:
+            # Without sound there is nothing to "stop", so settle alarms.
+            self.app.dismiss_all_ringing()
         self._save()
-
-    def _on_settings_theme_clicked(self, _button: Gtk.Button) -> None:
-        self._apply_theme("light" if self._theme == "dark" else "dark", persist=True)
 
     def _on_settings_response(self, _dialog: Adw.AlertDialog, response: str) -> None:
         if response == "quit":
@@ -1276,6 +1444,9 @@ class TimeyApplication(Adw.Application):
         self._tick_source: int | None = None
         self._tick_count = 0
         self._autostart_checked = False
+        #: Alarms currently ringing (uid -> Alarm); sound repeats until stopped.
+        self._ringing: dict[str, Alarm] = {}
+        self._ring_source: int | None = None
 
         self.connect("activate", self._on_activate)
         self.connect("shutdown", self._on_shutdown)
@@ -1286,6 +1457,11 @@ class TimeyApplication(Adw.Application):
         )
         open_action.connect("activate", self._on_open_window)
         self.add_action(open_action)
+
+        # Lets a ringing alarm's notification silence it directly.
+        stop_action = Gio.SimpleAction.new("stop-alarm", None)
+        stop_action.connect("activate", self._on_stop_alarm_action)
+        self.add_action(stop_action)
 
     # ── lifecycle ────────────────────────────────────────────────────
     def _on_activate(self, app: Adw.Application) -> None:
@@ -1311,10 +1487,20 @@ class TimeyApplication(Adw.Application):
         window.present()
         window._refresh_stopwatch()
 
+    def _on_stop_alarm_action(self, _action, _parameter) -> None:
+        self.dismiss_all_ringing()
+        if self.window is not None:
+            self.window.present()
+            self.window._refresh_stopwatch()
+
     def _on_shutdown(self, *_args) -> None:
         if self._tick_source is not None:
             GLib.source_remove(self._tick_source)
             self._tick_source = None
+        if self._ring_source is not None:
+            GLib.source_remove(self._ring_source)
+            self._ring_source = None
+        self._ringing.clear()
         self.save_state()
 
     def _start_tick(self) -> None:
@@ -1355,13 +1541,62 @@ class TimeyApplication(Adw.Application):
             self.save_state()
         return True
 
-    # ── alerts ───────────────────────────────────────────────────────
+    # ── alerts & ringing ─────────────────────────────────────────────
     def _alert_timer_finished(self, countdown: Countdown) -> None:
         label = countdown.name if countdown.name else "Timer"
-        alerts.timer_alert(self, f"timey-timer-{label}", countdown.name, self.state.sound)
+        alerts.timer_alert(
+            self,
+            f"timey-timer-{label}",
+            countdown.name,
+            countdown.sound,
+            self.state.sound,
+        )
 
     def _alert_alarm_fired(self, alarm: Alarm) -> None:
-        alerts.alarm_alert(self, f"timey-alarm-{alarm.uid}", alarm.name, self.state.sound)
+        """An alarm came due: notify, and ring continuously until stopped."""
+        alerts.alarm_started(self, f"timey-alarm-{alarm.uid}", alarm.name)
+        if self.state.sound:
+            self._ringing[alarm.uid] = alarm
+            self._ensure_ring_source()
+            alerts.play_alarm_tone(True)
+        else:
+            # No sound means nothing to stop — settle immediately.
+            alarm.dismiss()
+
+    def _ensure_ring_source(self) -> None:
+        if self._ring_source is None:
+            self._ring_source = GLib.timeout_add(RING_MS, self._on_ring_timeout)
+
+    def _on_ring_timeout(self) -> bool:
+        # Drop anything the engine has already stopped.
+        for uid in [uid for uid, alarm in self._ringing.items() if not alarm.ringing]:
+            del self._ringing[uid]
+        if not self._ringing:
+            self._ring_source = None
+            return False
+        alerts.play_alarm_tone(self.state.sound)
+        return True
+
+    def dismiss_alarm(self, alarm: Alarm) -> None:
+        """Stop a ringing alarm (silence it and settle its schedule)."""
+        alarm.dismiss()
+        self._ringing.pop(alarm.uid, None)
+        self.state.sort_alarms()
+        self.save_state()
+        if self.window is not None:
+            self.window._on_alarm_changed()
+
+    def dismiss_all_ringing(self) -> None:
+        if not self._ringing:
+            return
+        for alarm in self.state.alarms:
+            if alarm.uid in self._ringing:
+                alarm.dismiss()
+        self._ringing.clear()
+        self.state.sort_alarms()
+        self.save_state()
+        if self.window is not None:
+            self.window._on_alarm_changed()
 
     # ── persistence / background ─────────────────────────────────────
     def save_state(self) -> None:

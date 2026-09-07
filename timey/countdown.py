@@ -24,15 +24,30 @@ FINISHED = "finished"
 
 STATES = (IDLE, RUNNING, PAUSED, FINISHED)
 
+#: Built-in alert sounds a timer can use (see also timey.alerts).
+BUILTIN_SOUND_KEYS = ("default", "bell", "chime", "ping")
+FILE_SOUND_PREFIX = "file:"
+
+
+def normalize_sound(value: object) -> str:
+    """Sanitize a persisted sound spec (builtin name or ``file:path``)."""
+    if isinstance(value, str):
+        if value in BUILTIN_SOUND_KEYS:
+            return value
+        if value.startswith(FILE_SOUND_PREFIX) and len(value) > len(FILE_SOUND_PREFIX):
+            return value
+    return "default"
+
 
 class Countdown:
     """A single countdown from ``duration`` seconds down to zero."""
 
-    def __init__(self, duration_s: float, name: str = "") -> None:
+    def __init__(self, duration_s: float, name: str = "", sound: str = "default") -> None:
         if duration_s <= 0:
             raise ValueError("Countdown duration must be positive")
         self.duration = float(duration_s)
         self.name = str(name).strip()
+        self.sound = normalize_sound(sound)
         self._state = IDLE
         self._remaining = self.duration
         self._started_at = 0.0
@@ -109,6 +124,7 @@ class Countdown:
         data: dict[str, object] = {
             "name": self.name,
             "duration": self.duration,
+            "sound": self.sound,
             "state": self._state,
             "remaining": self.remaining(),
         }
@@ -131,7 +147,7 @@ class Countdown:
         duration = float(data.get("duration", 0))
         if duration <= 0:
             raise ValueError("Countdown duration must be positive")
-        countdown = cls(duration, name=name)
+        countdown = cls(duration, name=name, sound=normalize_sound(data.get("sound")))
 
         state = data.get("state", IDLE)
         if state == FINISHED:

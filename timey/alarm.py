@@ -99,6 +99,8 @@ class Alarm:
         self.enabled = bool(enabled)
         self.uid = uid or uuid.uuid4().hex
 
+        #: True while the alarm is ringing and waiting to be stopped.
+        self.ringing = False
         #: Next due occurrence (naive local), or None when not armed.
         self.next_fire: _dt.datetime | None = None
         #: When it last went off (naive local), if ever.
@@ -177,6 +179,7 @@ class Alarm:
         be re-armed before it is switched on; ``check`` only fires when
         the alarm is enabled.
         """
+        self.ringing = False
         self.next_fire = self.occurrence_after(moment or now())
 
     def set_enabled(self, enabled: bool) -> None:
@@ -185,25 +188,42 @@ class Alarm:
         if self.enabled:
             self.arm()
         else:
+            self.ringing = False
             self.next_fire = None
 
     def check(self, moment: _dt.datetime | None = None) -> bool:
-        """Fire the alarm if its time has come. Returns True exactly once."""
+        """Signal that the alarm's time has come. Returns True exactly once.
+
+        The alarm enters the :attr:`ringing` state and stays there until
+        :meth:`dismiss` (or :meth:`set_enabled`) is called, so the sound
+        can keep playing continuously until the user stops it.
+        """
         if not self.enabled or self.next_fire is None:
             return False
         current = moment or now()
         if current < self.next_fire:
             return False
+        if self.ringing:
+            return False  # already ringing; not due again
 
+        self.ringing = True
         self.last_fired = self.next_fire
+        return True
+
+    def dismiss(self, moment: _dt.datetime | None = None) -> None:
+        """Stop a ringing alarm.
+
+        A repeating alarm re-arms for its next occurrence; a one-shot
+        alarm goes quiet (``enabled`` False) but stays in the list.
+        """
+        if not self.ringing:
+            return
+        self.ringing = False
         if self.repeat:
-            # Re-arm for the next allowed weekday occurrence.
-            self.next_fire = self.occurrence_after(current)
+            self.next_fire = self.occurrence_after(moment or now())
         else:
-            # One-shot: fire and go quiet, but stay in the list.
             self.next_fire = None
             self.enabled = False
-        return True
 
     # ── restore handling ─────────────────────────────────────────────
     def reconcile(self, moment: _dt.datetime | None = None) -> None:

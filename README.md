@@ -6,11 +6,12 @@ and Libadwaita. Dark mode by default, with a light-mode toggle.
 ## Features
 
 - **Alarms** — set as many as you want. Ring once, daily, or on chosen
-  weekdays. Desktop notification and sound when they go off.
+  weekdays. They keep ringing (sound + notification) until you stop them.
 - **Stopwatch** — start/pause/reset with lap recording.
-- **Timers** — run several countdowns at once.
+- **Timers** — run several countdowns at once; pick the alert sound for
+  each one (built-in tones or your own audio file, with preview).
 - **World clock** — current time in your timezone (default) and any
-  cities you add.
+  cities you add (shown together with each city's timezone).
 - **Runs in the background** — alarms and timers keep going when the
   window is closed (on by default when installed).
 - **Remembers everything** — alarms, timers, stopwatch history and
@@ -41,12 +42,6 @@ To remove it later: `./install.sh --uninstall`
 
 ```bash
 python3 -m timey
-```
-
-Run the unit tests with:
-
-```bash
-python3 -m unittest discover -s tests
 ```
 
 ## License

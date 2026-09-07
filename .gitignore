@@ -35,6 +35,9 @@ coverage.xml
 .tox/
 .nox/
 
+# ── Tests (kept locally for development, not shipped) ───────────────
+tests/
+
 # ── Editors / IDEs / OS ─────────────────────────────────────────────
 .idea/
 .vscode/
