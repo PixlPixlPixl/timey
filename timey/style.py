@@ -179,6 +179,53 @@ button.timey-start {
   color: @@main@@;
 }
 
+/* ── alarm cards ───────────────────────────────── */
+.timey-alarmtime {
+  font-family: monospace;
+  font-size: 30px;
+  font-weight: 700;
+  color: @@main@@;
+}
+.timey-alarmmeta {
+  font-size: 12px;
+  color: @@muted@@;
+}
+
+button.timey-daybtn {
+  background-image: none;
+  background-color: transparent;
+  border: 1px solid @@border@@;
+  border-radius: 999px;
+  padding: 4px 11px;
+  font-size: 12px;
+  font-weight: 600;
+  color: @@muted@@;
+}
+button.timey-daybtn:hover {
+  color: @@main@@;
+}
+button.timey-daybtn:checked {
+  background-color: @@main@@;
+  border-color: @@main@@;
+  color: @@onmain@@;
+}
+
+/* ── world clock cards ─────────────────────────── */
+.timey-worldname {
+  font-weight: 700;
+  color: @@main@@;
+}
+.timey-worldmeta {
+  font-size: 12px;
+  color: @@muted@@;
+}
+.timey-worldtime {
+  font-family: monospace;
+  font-size: 30px;
+  font-weight: 300;
+  color: @@main@@;
+}
+
 .timey-card progressbar trough {
   background-color: @@border@@;
   border-radius: 999px;

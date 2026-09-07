@@ -104,5 +104,51 @@ class CountdownTests(unittest.TestCase):
         self.assertEqual(t.name, "Focus")
 
 
+class PersistenceTests(unittest.TestCase):
+    def test_idle_round_trip(self) -> None:
+        t = Countdown(90, name="Tea")
+        restored = Countdown.from_state(t.save_state(wall=1000.0), wall=1010.0)
+        self.assertTrue(restored.is_idle())
+        self.assertEqual(restored.remaining(), 90.0)
+        self.assertEqual(restored.name, "Tea")
+
+    def test_paused_round_trip(self) -> None:
+        data = {"name": "P", "duration": 60, "state": "paused", "remaining": 40}
+        restored = Countdown.from_state(data, wall=2000.0)
+        self.assertTrue(restored.is_paused())
+        self.assertAlmostEqual(restored.remaining(), 40.0)
+
+    def test_running_keeps_counting_across_restart(self) -> None:
+        # Saved at wall=1000 with 50 s left, reopened 10 s later.
+        data = {
+            "name": "Run",
+            "duration": 60,
+            "state": "running",
+            "remaining": 50,
+            "wall": 1000.0,
+        }
+        restored = Countdown.from_state(data, wall=1010.0)
+        self.assertTrue(restored.is_running())
+        self.assertAlmostEqual(restored.remaining(), 40.0, delta=0.01)
+
+    def test_running_that_expired_while_away_is_finished(self) -> None:
+        data = {
+            "name": "Run",
+            "duration": 60,
+            "state": "running",
+            "remaining": 5,
+            "wall": 1000.0,
+        }
+        restored = Countdown.from_state(data, wall=2000.0)
+        self.assertTrue(restored.is_finished())
+        self.assertEqual(restored.remaining(), 0.0)
+
+    def test_finished_round_trip(self) -> None:
+        data = {"name": "Done", "duration": 10, "state": "finished", "remaining": 0}
+        restored = Countdown.from_state(data, wall=1.0)
+        self.assertTrue(restored.is_finished())
+        self.assertEqual(restored.remaining(), 0.0)
+
+
 if __name__ == "__main__":
     unittest.main()

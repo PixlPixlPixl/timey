@@ -4,6 +4,13 @@ Designed to be driven by a periodic UI tick: call :meth:`update` while a
 timer is running; it returns ``True`` exactly once when the timer hits
 zero, so a UI layer can react (notification, flash, sound, ...) without
 double-firing.
+
+Timers survive restarts. While a timer is running its *remaining* time is
+measured with the monotonic clock (immune to wall-clock adjustments), but
+every save also records a wall-clock anchor (:meth:`save_state`). A later
+:meth:`from_state` restores the timer and accounts for the time that
+passed while the app was closed, so a running timer keeps counting down
+across launches.
 """
 
 from __future__ import annotations
@@ -88,6 +95,71 @@ class Countdown:
             self._state = FINISHED
             return True
         return False
+
+    # ── persistence ──────────────────────────────────────────────────
+    def save_state(self, wall: float | None = None) -> dict[str, object]:
+        """Serializable snapshot, as of now.
+
+        ``wall`` is a wall-clock ``time.time()`` stamp and is stored only
+        while the countdown is running, so a restore can tell how much of
+        the remaining time elapsed while the app was closed.
+        """
+        if wall is None:
+            wall = time.time()
+        data: dict[str, object] = {
+            "name": self.name,
+            "duration": self.duration,
+            "state": self._state,
+            "remaining": self.remaining(),
+        }
+        if self._state == RUNNING:
+            data["wall"] = wall
+        return data
+
+    @classmethod
+    def from_state(cls, data: dict, wall: float | None = None) -> "Countdown":
+        """Rebuild a countdown from :meth:`save_state`.
+
+        A running countdown continues counting down across the gap: any
+        time that passed while the app was closed is subtracted from the
+        stored remaining time. If it ran out while away, the restored
+        timer is ``FINISHED``.
+        """
+        if wall is None:
+            wall = time.time()
+        name = str(data.get("name", ""))
+        duration = float(data.get("duration", 0))
+        if duration <= 0:
+            raise ValueError("Countdown duration must be positive")
+        countdown = cls(duration, name=name)
+
+        state = data.get("state", IDLE)
+        if state == FINISHED:
+            countdown._state = FINISHED
+            countdown._remaining = 0.0
+            return countdown
+        if state == PAUSED:
+            countdown._state = PAUSED
+            countdown._remaining = max(0.0, float(data.get("remaining", duration)))
+            return countdown
+        if state == IDLE:
+            # Already constructed idle at full duration.
+            return countdown
+
+        # Running (or corrupt state): treat as running.
+        remaining = max(0.0, float(data.get("remaining", duration)))
+        anchor = float(data.get("wall") or wall)
+        remaining = max(0.0, remaining - (wall - anchor))
+        countdown._remaining = remaining
+        if remaining <= 0:
+            countdown._state = FINISHED
+            countdown._remaining = 0.0
+        else:
+            # Start from here with the reduced remaining time so the
+            # monotonic clock keeps measuring inside this process.
+            countdown._state = IDLE
+            countdown.start()
+        return countdown
 
     # ── internals ────────────────────────────────────────────────────
     def _running_time(self) -> float:

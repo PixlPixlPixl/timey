@@ -1,11 +1,23 @@
-"""Timey — a grayscale stopwatch & multi-countdown app.
+"""Timey — a grayscale stopwatch, timers, alarms & world clock.
 
 Built with Python + GTK 4 + Libadwaita.
+
+Architecture notes
+------------------
+Models (stopwatch, countdowns, alarms, world-clock zones) live on the
+:class:`TimeyApplication` and are ticked there, so alarms and timers keep
+firing desktop notifications / sounds even while the window is hidden or
+running in the background. The window is a view over those models.
+Everything is persisted to ``~/.config/timey/state.json``.
 """
 
 from __future__ import annotations
 
+import os
+import shlex
+import shutil
 import sys
+from pathlib import Path
 
 import gi
 
@@ -15,19 +27,34 @@ gi.require_version("Adw", "1")
 
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk  # noqa: E402
 
-from . import env, style  # noqa: E402
+from . import alerts, env, state as statemod, style, worldclock  # noqa: E402
+from .alarm import (  # noqa: E402
+    WEEKDAY_SHORT,
+    Alarm,
+    format_time as alarm_time,
+    now as alarm_now,
+)
 from .countdown import Countdown  # noqa: E402
-from .prefs import Prefs  # noqa: E402
-from .stopwatch import Stopwatch, format_elapsed  # noqa: E402
+from .stopwatch import format_elapsed  # noqa: E402
 
 APP_ID = "io.github.pixlpixlpixl.Timey"
 APP_NAME = "Timey"
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 WEBSITE = "https://github.com/PixlPixlPixl/Timey"
 
-TICK_MS = 10  # refresh rate of the centisecond displays
+TICK_MS = 10        # refresh rate of the live displays
+AUTOSAVE_TICKS = 500  # persist running engines every ~5 s
 
 _CSS_PRIORITY = Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+
+#: Page order in the header switch. Alarms live on the far left, the
+#: world clock on the far right, by design.
+PAGES = (
+    ("Alarm", "alarms"),
+    ("Stopwatch", "stopwatch"),
+    ("Timer", "timers"),
+    ("World", "world"),
+)
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -115,10 +142,12 @@ class _TimerCard:
             cd.pause()
         elif not cd.is_finished():
             cd.start()
+        self.window._save()
         self.refresh()
 
     def _on_reset(self, _button: Gtk.Button) -> None:
         self.countdown.reset()
+        self.window._save()
         self.refresh()
 
     def _on_delete(self, _button: Gtk.Button) -> None:
@@ -164,37 +193,189 @@ class _TimerCard:
 
 
 # ─────────────────────────────────────────────────────────────────────
+# Alarm card widget
+# ─────────────────────────────────────────────────────────────────────
+def _alarm_status_text(alarm: Alarm) -> str:
+    """Subtitle for an alarm card."""
+    if not alarm.enabled:
+        if not alarm.repeat and alarm.last_fired is not None:
+            return "Rang"
+        return "Off"
+    if alarm.repeat:
+        return f"{alarm.describe_repeat()} · {alarm.describe_next()}"
+    return f"Once · {alarm.describe_next()}"
+
+
+class _AlarmCard:
+    """A single alarm rendered as a card in the Alarms view."""
+
+    def __init__(self, window: "TimeyWindow", alarm: Alarm) -> None:
+        self.window = window
+        self.alarm = alarm
+
+        card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        card.add_css_class("timey-card")
+        card.set_margin_top(2)
+        card.set_margin_bottom(2)
+        self.card = card
+
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+
+        left = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        left.set_hexpand(True)
+        left.set_valign(Gtk.Align.CENTER)
+
+        self.time_label = Gtk.Label(label=alarm_time(alarm.hour, alarm.minute))
+        self.time_label.add_css_class("timey-alarmtime")
+        self.time_label.set_halign(Gtk.Align.START)
+        left.append(self.time_label)
+
+        meta_lines = []
+        if alarm.name:
+            meta_lines.append(alarm.name)
+        meta_lines.append(_alarm_status_text(alarm))
+        self.meta_label = Gtk.Label(label="  ".join(meta_lines))
+        self.meta_label.add_css_class("timey-alarmmeta")
+        self.meta_label.set_halign(Gtk.Align.START)
+        self.meta_label.set_ellipsize(2)
+        self.meta_label.set_max_width_chars(30)
+        left.append(self.meta_label)
+        row.append(left)
+
+        self.enabled_switch = Gtk.Switch()
+        self.enabled_switch.set_valign(Gtk.Align.CENTER)
+        self.enabled_switch.set_active(alarm.enabled)
+        self.enabled_switch.set_tooltip_text("Enable / disable this alarm")
+        self.enabled_switch.connect("notify::active", self._on_enabled_changed)
+        row.append(self.enabled_switch)
+
+        edit_button = Gtk.Button(icon_name="document-edit-symbolic")
+        edit_button.add_css_class("timey-iconbtn")
+        edit_button.set_tooltip_text("Edit this alarm")
+        edit_button.connect("clicked", self._on_edit)
+        row.append(edit_button)
+
+        delete_button = Gtk.Button(icon_name="edit-delete-symbolic")
+        delete_button.add_css_class("timey-iconbtn")
+        delete_button.set_tooltip_text("Delete this alarm")
+        delete_button.connect("clicked", self._on_delete)
+        row.append(delete_button)
+
+        card.append(row)
+
+    # ── handlers ─────────────────────────────────────────────────────
+    def _on_enabled_changed(self, switch: Gtk.Switch, _param) -> None:
+        self.alarm.set_enabled(switch.get_active())
+        self.window._on_alarm_changed()
+
+    def _on_edit(self, _button: Gtk.Button) -> None:
+        self.window._edit_alarm(self.alarm)
+
+    def _on_delete(self, _button: Gtk.Button) -> None:
+        self.window._delete_alarm(self.alarm)
+
+
+# ─────────────────────────────────────────────────────────────────────
+# World-clock card widget
+# ─────────────────────────────────────────────────────────────────────
+class _WorldCard:
+    """A clock card for one timezone in the World view."""
+
+    def __init__(self, window: "TimeyWindow", zone: str) -> None:
+        self.window = window
+        self.zone = zone
+        self._last_time = ""
+        self._last_meta = ""
+
+        card = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=14)
+        card.add_css_class("timey-card")
+        card.set_margin_top(2)
+        card.set_margin_bottom(2)
+        self.card = card
+
+        label, _info = worldclock.zone_info(zone)
+        self.title_label = Gtk.Label(label="Local time" if worldclock.is_local(zone) else label)
+        self.title_label.add_css_class("timey-worldname")
+        self.title_label.set_halign(Gtk.Align.START)
+        self.title_label.set_hexpand(True)
+        self.title_label.set_ellipsize(2)
+
+        self.meta_label = Gtk.Label(label="")
+        self.meta_label.add_css_class("timey-worldmeta")
+        self.meta_label.set_halign(Gtk.Align.START)
+
+        title_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        title_box.set_hexpand(True)
+        title_box.set_valign(Gtk.Align.CENTER)
+        title_box.append(self.title_label)
+        title_box.append(self.meta_label)
+        card.append(title_box)
+
+        self.time_label = Gtk.Label(label="--:--:--")
+        self.time_label.add_css_class("timey-worldtime")
+        card.append(self.time_label)
+
+        remove_button = Gtk.Button(icon_name="edit-delete-symbolic")
+        remove_button.add_css_class("timey-iconbtn")
+        remove_button.set_tooltip_text("Remove this clock")
+        remove_button.connect("clicked", self._on_remove)
+        card.append(remove_button)
+
+    def _on_remove(self, _button: Gtk.Button) -> None:
+        self.window._remove_zone(self.zone)
+
+    def tick(self) -> None:
+        """Refresh the readout; only touches widgets when the text changed."""
+        dt = worldclock.current_in(self.zone)
+        if dt is None:
+            if self._last_time != "unknown":
+                self._last_time = "unknown"
+                self.time_label.set_text("--:--:--")
+            return
+        parts = worldclock.snapshot_text(dt)
+        if parts["time"] != self._last_time:
+            self._last_time = parts["time"]
+            self.time_label.set_text(parts["time"])
+        meta = f"{parts['offset']}  ·  {parts['date']}"
+        if meta != self._last_meta:
+            self._last_meta = meta
+            self.meta_label.set_text(meta)
+
+
+# ─────────────────────────────────────────────────────────────────────
 # Main window
 # ─────────────────────────────────────────────────────────────────────
 class TimeyWindow(Adw.ApplicationWindow):
-    """Main application window."""
+    """Main application window (a view over the application's models)."""
 
-    def __init__(self, app: Adw.Application, prefs: Prefs) -> None:
+    def __init__(self, app: "TimeyApplication") -> None:
         super().__init__(
             application=app,
             title=APP_NAME,
-            default_width=440,
-            default_height=680,
+            default_width=460,
+            default_height=700,
             resizable=True,
         )
-        self.prefs = prefs
-        self.stopwatch = Stopwatch()
+        self.app = app
+        self.state = app.state
+        self.stopwatch = self.state.stopwatch
         self.timer_cards: list[_TimerCard] = []
 
-        self._theme = prefs.theme if prefs.theme in ("dark", "light") else "dark"
+        self._theme = self.state.theme
         self._provider = Gtk.CssProvider()
         self._css_installed = False
-        self._tick_source: int | None = None
         self.about_window: Adw.AboutWindow | None = None
+        self.world_cards: list[_WorldCard] = []
 
         self._build_ui()
         self.connect("destroy", self._on_destroy)
         self.connect("realize", self._on_realize)
+        self.connect("close-request", self._on_close_request)
 
-        # Apply the initial theme right away; it is reapplied on realize
-        # once a display is available.
         self._apply_theme(self._theme)
         self._refresh_stopwatch()
+        self._rebuild_alarm_list()
+        self._rebuild_world_list()
 
     # ── UI construction ──────────────────────────────────────────────
     def _build_ui(self) -> None:
@@ -203,16 +384,17 @@ class TimeyWindow(Adw.ApplicationWindow):
 
         header = Adw.HeaderBar()
 
-        # Two tools: the stopwatch and the (multi) countdown timers.
         self.stack = Adw.ViewStack()
+        self.stack.add_named(self._build_alarms_page(), "alarms")
         self.stack.add_named(self._build_stopwatch_page(), "stopwatch")
         self.stack.add_named(self._build_timers_page(), "timers")
+        self.stack.add_named(self._build_world_page(), "world")
 
         # Text-only tool switcher (no icons anywhere, by design).
         switch_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
         switch_box.add_css_class("timey-switch")
         self._mode_buttons: list[Gtk.ToggleButton] = []
-        for title, page in (("Stopwatch", "stopwatch"), ("Timer", "timers")):
+        for title, page in PAGES:
             button = Gtk.ToggleButton(label=title)
             button.add_css_class("timey-switchbtn")
             if self._mode_buttons:
@@ -220,11 +402,19 @@ class TimeyWindow(Adw.ApplicationWindow):
             button.connect("toggled", self._on_mode_toggled, page)
             self._mode_buttons.append(button)
             switch_box.append(button)
-        self._mode_buttons[0].set_active(True)
+        # Stopwatch stays the default page.
+        self._mode_buttons[1].set_active(True)
         header.set_title_widget(switch_box)
         toolbar.add_top_bar(header)
 
-        # Theme toggle (dark ⇄ light) + about button.
+        # Header actions: settings, theme toggle (dark ⇄ light), about.
+        self.settings_button = Gtk.Button()
+        self.settings_button.add_css_class("flat")
+        self.settings_button.set_child(Gtk.Image(icon_name="preferences-system-symbolic"))
+        self.settings_button.set_tooltip_text("Settings")
+        self.settings_button.connect("clicked", self._on_settings)
+        header.pack_end(self.settings_button)
+
         self.theme_button = Gtk.Button()
         self.theme_button.add_css_class("flat")
         self.theme_button.set_child(Gtk.Image(icon_name="weather-clear-symbolic"))
@@ -244,6 +434,57 @@ class TimeyWindow(Adw.ApplicationWindow):
         controller = Gtk.EventControllerKey()
         controller.connect("key-pressed", self._on_key_pressed)
         self.add_controller(controller)
+
+    # ── alarms page ──────────────────────────────────────────────────
+    def _build_alarms_page(self) -> Gtk.Widget:
+        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        page.set_margin_top(18)
+        page.set_margin_bottom(18)
+        page.set_margin_start(28)
+        page.set_margin_end(28)
+
+        intro = Gtk.Label(label="ALARM AT A SET TIME. REPEAT DAILY OR ON SELECTED DAYS, OR RING ONCE.")
+        intro.add_css_class("timey-hint")
+        intro.set_halign(Gtk.Align.CENTER)
+        intro.set_margin_bottom(16)
+        page.append(intro)
+
+        add_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        add_box.append(Gtk.Image(icon_name="list-add-symbolic", pixel_size=16))
+        add_box.append(Gtk.Label(label="Add Alarm"))
+        add_button = Gtk.Button()
+        add_button.set_child(add_box)
+        add_button.add_css_class("timey-btn")
+        add_button.add_css_class("timey-ghost")
+        add_button.add_css_class("timey-sm")
+        add_button.set_halign(Gtk.Align.CENTER)
+        add_button.set_tooltip_text("Add a new alarm")
+        add_button.connect("clicked", self._on_add_alarm)
+        page.append(add_button)
+
+        scroller = Gtk.ScrolledWindow(vexpand=True, hexpand=True)
+        scroller.add_css_class("timey-scroller")
+        scroller.set_propagate_natural_height(False)
+        scroller.set_margin_top(16)
+        page.append(scroller)
+
+        self.alarms_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        self.alarms_box.set_hexpand(True)
+        self.alarms_box.set_margin_bottom(6)
+        scroller.set_child(self.alarms_box)
+
+        self.alarms_empty = Gtk.Label(
+            label='No alarms yet\n\nClick "Add Alarm" to set one. '
+                  "Alarms are evaluated in your local timezone."
+        )
+        self.alarms_empty.add_css_class("timey-empty")
+        self.alarms_empty.set_justify(Gtk.Justification.CENTER)
+        self.alarms_empty.set_halign(Gtk.Align.CENTER)
+        self.alarms_empty.set_margin_top(80)
+        self.alarms_empty.set_margin_bottom(80)
+        self.alarms_box.append(self.alarms_empty)
+
+        return page
 
     # ── stopwatch page ───────────────────────────────────────────────
     def _build_stopwatch_page(self) -> Gtk.Widget:
@@ -371,6 +612,52 @@ class TimeyWindow(Adw.ApplicationWindow):
         self.timers_empty.set_margin_bottom(80)
         self.timers_box.append(self.timers_empty)
 
+        for countdown in self.state.timers:
+            card = _TimerCard(self, countdown)
+            self.timer_cards.append(card)
+            self.timers_box.insert_child_after(card.card, self.timers_empty)
+        self._refresh_timers_empty_state()
+
+        return page
+
+    # ── world clock page ─────────────────────────────────────────────
+    def _build_world_page(self) -> Gtk.Widget:
+        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        page.set_margin_top(18)
+        page.set_margin_bottom(18)
+        page.set_margin_start(28)
+        page.set_margin_end(28)
+
+        intro = Gtk.Label(label="CURRENT TIME AROUND THE WORLD — YOUR TIMEZONE IS LISTED FIRST")
+        intro.add_css_class("timey-hint")
+        intro.set_halign(Gtk.Align.CENTER)
+        intro.set_margin_bottom(16)
+        page.append(intro)
+
+        add_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        add_box.append(Gtk.Image(icon_name="list-add-symbolic", pixel_size=16))
+        add_box.append(Gtk.Label(label="Add City"))
+        add_button = Gtk.Button()
+        add_button.set_child(add_box)
+        add_button.add_css_class("timey-btn")
+        add_button.add_css_class("timey-ghost")
+        add_button.add_css_class("timey-sm")
+        add_button.set_halign(Gtk.Align.CENTER)
+        add_button.set_tooltip_text("Add another timezone clock")
+        add_button.connect("clicked", self._on_add_zone)
+        page.append(add_button)
+
+        scroller = Gtk.ScrolledWindow(vexpand=True, hexpand=True)
+        scroller.add_css_class("timey-scroller")
+        scroller.set_propagate_natural_height(False)
+        scroller.set_margin_top(16)
+        page.append(scroller)
+
+        self.world_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        self.world_box.set_hexpand(True)
+        self.world_box.set_margin_bottom(6)
+        scroller.set_child(self.world_box)
+
         return page
 
     @staticmethod
@@ -379,6 +666,149 @@ class TimeyWindow(Adw.ApplicationWindow):
         button.add_css_class("timey-btn")
         button.add_css_class(f"timey-{kind}")
         return button
+
+    # ── alarms logic ─────────────────────────────────────────────────
+    def _on_add_alarm(self, *_args) -> None:
+        self._alarm_editor().present(self)
+
+    def _edit_alarm(self, alarm: Alarm) -> None:
+        self._alarm_editor(alarm).present(self)
+
+    def _delete_alarm(self, alarm: Alarm) -> None:
+        if alarm in self.state.alarms:
+            self.state.alarms.remove(alarm)
+        self._save()
+        self._rebuild_alarm_list()
+
+    def _on_alarm_changed(self) -> None:
+        self.state.sort_alarms()
+        self._save()
+        self._rebuild_alarm_list()
+
+    def _alarm_editor(self, alarm: Alarm | None = None) -> Adw.AlertDialog:
+        """Shared dialog for creating / editing an alarm."""
+        name_row = Adw.EntryRow()
+        name_row.set_title("Name (optional)")
+        hour = Adw.SpinRow.new_with_range(0, 23, 1)
+        hour.set_title("Hour")
+        hour.set_value(alarm.hour if alarm else 7)
+        minute = Adw.SpinRow.new_with_range(0, 59, 1)
+        minute.set_title("Minute")
+        minute.set_value(alarm.minute if alarm else 0)
+
+        repeat_row = Adw.SwitchRow()
+        repeat_row.set_title("Repeat")
+        repeat_row.set_subtitle("Ring daily or on chosen weekdays. Off means a one-shot alarm.")
+        repeat_row.set_active(alarm.repeat if alarm else False)
+
+        day_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        day_box.set_margin_top(10)
+        day_box.set_margin_bottom(4)
+        day_box.set_halign(Gtk.Align.CENTER)
+        day_toggles: list[Gtk.ToggleButton] = []
+        for day in WEEKDAY_SHORT:
+            toggle = Gtk.ToggleButton(label=day)
+            toggle.add_css_class("timey-daybtn")
+            toggle.set_tooltip_text(f"Repeat every {day}")
+            toggle.set_active(True)
+            day_box.append(toggle)
+            day_toggles.append(toggle)
+
+        if alarm and alarm.repeat:
+            for toggle, day in zip(day_toggles, range(7)):
+                toggle.set_active(day in alarm.weekdays)
+
+        def sync_day_visibility(*_args) -> None:
+            day_box.set_visible(repeat_row.get_active())
+
+        day_box.set_visible(repeat_row.get_active())
+        repeat_row.connect("notify::active", sync_day_visibility)
+
+        group = Adw.PreferencesGroup()
+        group.add(name_row)
+        group.add(hour)
+        group.add(minute)
+        group.add(repeat_row)
+
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        outer.append(group)
+        outer.append(day_box)
+
+        dialog = Adw.AlertDialog()
+        dialog.set_heading("Edit alarm" if alarm else "New alarm")
+        dialog.set_body("Alarms use your local timezone.")
+        dialog.set_extra_child(outer)
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("save", "Save")
+        dialog.set_response_appearance("save", Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_default_response("save")
+        dialog.set_close_response("cancel")
+        dialog.connect(
+            "response",
+            self._on_alarm_editor_response,
+            alarm, name_row, hour, minute, repeat_row, day_toggles,
+        )
+        return dialog
+
+    def _on_alarm_editor_response(
+        self,
+        _dialog: Adw.AlertDialog,
+        response: str,
+        existing: Alarm | None,
+        name_row: Adw.EntryRow,
+        hour_row: Adw.SpinRow,
+        minute_row: Adw.SpinRow,
+        repeat_row: Adw.SwitchRow,
+        day_toggles: list[Gtk.ToggleButton],
+    ) -> None:
+        if response != "save":
+            return
+        hour = int(hour_row.get_value())
+        minute = int(minute_row.get_value())
+        repeat = repeat_row.get_active()
+        weekdays = {index for index, toggle in enumerate(day_toggles) if toggle.get_active()}
+        name = name_row.get_text()
+
+        if existing is not None:
+            existing.name = name
+            existing.hour = hour
+            existing.minute = minute
+            if repeat:
+                existing.repeat = True
+                existing.weekdays = weekdays if weekdays else set(range(7))
+                if existing.enabled:
+                    existing.arm()
+            else:
+                existing.repeat = False
+                if existing.enabled:
+                    existing.arm()
+            self._on_alarm_changed()
+            return
+
+        alarm = Alarm(
+            hour,
+            minute,
+            name=name,
+            repeat=repeat,
+            weekdays=weekdays if repeat and weekdays else None,
+            enabled=True,
+        )
+        self.state.alarms.append(alarm)
+        self._on_alarm_changed()
+
+    def _rebuild_alarm_list(self) -> None:
+        """Re-render alarm cards in their sorted order."""
+        self.state.sort_alarms()
+        while (child := self.alarms_box.get_first_child()) is not None:
+            self.alarms_box.remove(child)
+        if not self.state.alarms:
+            self.alarms_empty.set_margin_top(80)
+            self.alarms_box.append(self.alarms_empty)
+            return
+        self.alarms_empty.set_margin_top(0)
+        self.alarms_empty.set_margin_bottom(0)
+        for alarm in self.state.alarms:
+            self.alarms_box.append(_AlarmCard(self, alarm).card)
 
     # ── timers logic ─────────────────────────────────────────────────
     def _new_add_dialog(self) -> Adw.AlertDialog:
@@ -436,36 +866,167 @@ class TimeyWindow(Adw.ApplicationWindow):
     def add_timer(self, duration_s: float, name: str = "") -> _TimerCard:
         """Create a new countdown card (used by the UI and tests)."""
         countdown = Countdown(duration_s, name=name)
+        self.state.timers.append(countdown)
         card = _TimerCard(self, countdown)
         self.timer_cards.append(card)
 
         # Keep the empty-state label first, cards after it.
         self.timers_box.insert_child_after(card.card, self.timers_empty)
         self._refresh_timers_empty_state()
+        self._save()
         return card
 
     def remove_timer(self, card: _TimerCard) -> None:
         if card not in self.timer_cards:
             return
         self.timer_cards.remove(card)
+        if card.countdown in self.state.timers:
+            self.state.timers.remove(card.countdown)
         self.timers_box.remove(card.card)
         self._refresh_timers_empty_state()
+        self._save()
 
     def _refresh_timers_empty_state(self) -> None:
         self.timers_empty.set_visible(not bool(self.timer_cards))
 
-    def _notify_timer_finished(self, countdown: Countdown) -> None:
-        app = self.get_application()
-        if app is None:
+    # ── world clock logic ────────────────────────────────────────────
+    def _on_add_zone(self, *_args) -> None:
+        self._zone_picker().present(self)
+
+    def _zone_picker(self) -> Adw.AlertDialog:
+        options = [("This computer (local timezone)", "Local")]
+        options.extend(worldclock.CITIES)
+
+        dropdown = Gtk.DropDown.new_from_strings([label for label, _zone in options])
+        dropdown.set_selected(0)
+        dropdown.set_hexpand(True)
+        dropdown.set_valign(Gtk.Align.CENTER)
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        box.set_margin_top(4)
+        label = Gtk.Label(label="Pick a city to add to your World clock:")
+        label.add_css_class("timey-hint")
+        label.set_halign(Gtk.Align.START)
+        box.append(label)
+        box.append(dropdown)
+
+        dialog = Adw.AlertDialog()
+        dialog.set_heading("Add a clock")
+        dialog.set_extra_child(box)
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("add", "Add")
+        dialog.set_response_appearance("add", Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_default_response("add")
+        dialog.set_close_response("cancel")
+        dialog.connect("response", self._on_add_zone_response, dropdown, options)
+        return dialog
+
+    def _on_add_zone_response(
+        self,
+        _dialog: Adw.AlertDialog,
+        response: str,
+        dropdown: Gtk.DropDown,
+        options: list[tuple[str, str]],
+    ) -> None:
+        if response != "add":
             return
-        label = countdown.name if countdown.name else "Timer finished"
-        notification = Gio.Notification.new(f"{APP_NAME} - {label}")
-        notification.set_body("Countdown complete")
-        app.send_notification("timey-countdown-finished", notification)
+        index = dropdown.get_selected()
+        if index < 0 or index >= len(options):
+            return
+        zone = options[index][1]
+        if zone in self.state.zones:
+            return
+        self.state.zones.append(zone)
+        self._save()
+        self._rebuild_world_list()
+
+    def _remove_zone(self, zone: str) -> None:
+        if zone not in self.state.zones:
+            return
+        self.state.zones.remove(zone)
+        if not self.state.zones:
+            # Always keep the local clock available.
+            self.state.zones = ["Local"]
+        self._save()
+        self._rebuild_world_list()
+
+    def _rebuild_world_list(self) -> None:
+        while (child := self.world_box.get_first_child()) is not None:
+            self.world_box.remove(child)
+        self.world_cards = []
+        for zone in self.state.zones:
+            card = _WorldCard(self, zone)
+            self.world_cards.append(card)
+            self.world_box.append(card.card)
+
+    # ── settings dialog ──────────────────────────────────────────────
+    def _on_settings(self, *_args) -> None:
+        self._build_settings_dialog().present(self)
+
+    def _build_settings_dialog(self) -> Adw.AlertDialog:
+        group = Adw.PreferencesGroup()
+
+        background_row = Adw.SwitchRow()
+        background_row.set_title("Keep running in the background")
+        background_row.set_subtitle(
+            "Alarms and timers keep going — with desktop notifications and "
+            "sound — even when the window is closed. Starts automatically at login."
+        )
+        background_row.set_active(self.state.background)
+        background_row.connect("notify::active", self._on_background_toggled, background_row)
+        group.add(background_row)
+
+        sound_row = Adw.SwitchRow()
+        sound_row.set_title("Play alert sounds")
+        sound_row.set_subtitle("Play a sound when an alarm or a timer finishes.")
+        sound_row.set_active(self.state.sound)
+        sound_row.connect("notify::active", self._on_sound_toggled, sound_row)
+        group.add(sound_row)
+
+        theme_row = Adw.ActionRow()
+        theme_row.set_title("Color scheme")
+        theme_row.set_subtitle("Dark or light.")
+        theme_button = Gtk.Button(label="Switch")
+        theme_button.add_css_class("timey-btn")
+        theme_button.add_css_class("timey-sm")
+        theme_button.connect("clicked", self._on_settings_theme_clicked)
+        theme_row.add_suffix(theme_button)
+        group.add(theme_row)
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        box.append(group)
+
+        dialog = Adw.AlertDialog()
+        dialog.set_heading("Settings")
+        dialog.set_body("Preferences are remembered between launches.")
+        dialog.set_extra_child(box)
+        if self.state.background:
+            dialog.add_response("quit", "Quit Timey")
+            dialog.set_response_appearance("quit", Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.add_response("close", "Close")
+        dialog.set_default_response("close")
+        dialog.set_close_response("close")
+        dialog.connect("response", self._on_settings_response)
+        return dialog
+
+    def _on_background_toggled(self, row: Adw.SwitchRow, _param, _data=None) -> None:
+        self.app.set_background_enabled(row.get_active())
+
+    def _on_sound_toggled(self, row: Adw.SwitchRow, _param, _data=None) -> None:
+        self.state.sound = row.get_active()
+        self._save()
+
+    def _on_settings_theme_clicked(self, _button: Gtk.Button) -> None:
+        self._apply_theme("light" if self._theme == "dark" else "dark", persist=True)
+
+    def _on_settings_response(self, _dialog: Adw.AlertDialog, response: str) -> None:
+        if response == "quit":
+            self.app.quit()
 
     # ── theming ──────────────────────────────────────────────────────
     def _apply_theme(self, theme: str, *, persist: bool = False) -> None:
         self._theme = theme
+        self.state.theme = theme
         manager = Adw.StyleManager.get_default()
         scheme = (
             Adw.ColorScheme.FORCE_DARK if theme == "dark" else Adw.ColorScheme.FORCE_LIGHT
@@ -476,8 +1037,7 @@ class TimeyWindow(Adw.ApplicationWindow):
         self._provider.load_from_string(style.build_css(theme))
 
         if persist:
-            self.prefs.theme = theme
-            self.prefs.save()
+            self._save()
 
         # Icon shows the *target* mode: sun (light) in dark, moon in light.
         image = self.theme_button.get_child()
@@ -495,36 +1055,49 @@ class TimeyWindow(Adw.ApplicationWindow):
             Gtk.StyleContext.add_provider_for_display(
                 self.get_display(), self._provider, _CSS_PRIORITY
             )
-        # Start the ticker once we have a real clock running.
-        if self._tick_source is None:
-            self._tick_source = GLib.timeout_add(TICK_MS, self._tick)
-
-    def _tick(self) -> bool:
-        if self.stopwatch.is_running():
-            self.time_label.set_text(format_elapsed(self.stopwatch.elapsed()))
-
-        for card in self.timer_cards:
-            countdown = card.countdown
-            if not countdown.is_running():
-                continue
-            if countdown.update():
-                card.refresh()
-                self._notify_timer_finished(countdown)
-            else:
-                card.update_time()
-        return True  # keep ticking
 
     def _on_destroy(self, *_args) -> None:
-        if self._tick_source is not None:
-            GLib.source_remove(self._tick_source)
-            self._tick_source = None
+        self._save()
+
+    def _on_close_request(self, *_args) -> bool:
+        """Close hides the window instead of quitting when in background mode."""
+        if self.state.background:
+            self._save()
+            self.hide()
+            return True
+        return False
+
+    def _save(self) -> None:
+        self.app.save_state()
+
+    # ── per-tick view refresh (driven by the application tick) ───────
+    def on_tick(self) -> None:
+        if not self.is_visible():
+            return
+        if self.stopwatch.is_running():
+            self.time_label.set_text(format_elapsed(self.stopwatch.elapsed()))
+        for card in self.timer_cards:
+            if card.countdown.is_running():
+                card.update_time()
+        for card in self.world_cards:
+            card.tick()
+
+    def on_timer_finished(self, countdown: Countdown) -> None:
+        for card in self.timer_cards:
+            if card.countdown is countdown:
+                card.refresh()
+
+    def on_alarm_fired(self, alarm: Alarm) -> None:
+        self._on_alarm_changed()
 
     # ── stopwatch actions ────────────────────────────────────────────
     def _on_toggle_start(self, *_args) -> None:
-        if self.stopwatch.is_running():
-            self.stopwatch.pause()
+        sw = self.stopwatch
+        if sw.is_running():
+            sw.pause()
         else:
-            self.stopwatch.start()
+            sw.start()
+        self._save()
         self._refresh_stopwatch()
 
     def _on_lap(self, *_args) -> None:
@@ -533,6 +1106,7 @@ class TimeyWindow(Adw.ApplicationWindow):
             return
         self._append_lap_row(record)
         self._refresh_stopwatch()
+        self._save()
 
     def _on_reset(self, *_args) -> None:
         self.stopwatch.reset()
@@ -540,6 +1114,7 @@ class TimeyWindow(Adw.ApplicationWindow):
         while (row := self.laps_list.get_first_child()) is not None:
             self.laps_list.remove(row)
         self._refresh_stopwatch()
+        self._save()
 
     def _refresh_stopwatch(self) -> None:
         sw = self.stopwatch
@@ -568,11 +1143,16 @@ class TimeyWindow(Adw.ApplicationWindow):
         self.reset_button.set_sensitive(has_time)
         self.lap_button.set_sensitive(state == "running")
 
+        # Restore persisted laps, if any.
+        if sw.lap_count and self.laps_list.get_first_child() is None:
+            for record in sw.laps:
+                self._append_lap_row(record, scroll=False)
+
         has_laps = sw.lap_count > 0
         self.laps_empty.set_visible(not has_laps)
         self.laps_list.set_visible(has_laps)
 
-    def _append_lap_row(self, record: dict) -> None:
+    def _append_lap_row(self, record: dict, *, scroll: bool = True) -> None:
         row = Gtk.ListBoxRow()
         row.add_css_class("timey-laprow")
 
@@ -606,8 +1186,9 @@ class TimeyWindow(Adw.ApplicationWindow):
         row.set_child(content)
         self.laps_list.append(row)
 
-        adjustment = self.scroller.get_vadjustment()
-        GLib.idle_add(adjustment.set_value, adjustment.get_upper())
+        if scroll:
+            adjustment = self.scroller.get_vadjustment()
+            GLib.idle_add(adjustment.set_value, adjustment.get_upper())
 
     # ── keyboard ─────────────────────────────────────────────────────
     def _on_key_pressed(self, _controller, keyval: int, _keycode: int, state) -> bool:
@@ -645,7 +1226,10 @@ class TimeyWindow(Adw.ApplicationWindow):
         about.set_application_name(APP_NAME)
         about.set_version(VERSION)
         about.set_developer_name("PixlPixlPixl")
-        about.set_comments("A grayscale stopwatch and countdown timer for the Linux desktop.")
+        about.set_comments(
+            "A grayscale stopwatch, countdown timers, alarms and world "
+            "clock for the Linux desktop."
+        )
         about.set_website(WEBSITE)
         about.add_credit_section("Built with", ["Python", "GTK 4", "Libadwaita"])
         about.present()
@@ -677,23 +1261,207 @@ class TimeyWindow(Adw.ApplicationWindow):
             GLib.timeout_add(attempt, once)
 
 
+# ─────────────────────────────────────────────────────────────────────
+# Application
+# ─────────────────────────────────────────────────────────────────────
 class TimeyApplication(Adw.Application):
-    def __init__(self) -> None:
+    def __init__(self, *, start_hidden: bool = False) -> None:
         super().__init__(
             application_id=APP_ID,
             flags=Gio.ApplicationFlags.DEFAULT_FLAGS,
         )
-        self.connect("activate", self._on_activate)
+        self._start_hidden = start_hidden
+        self.state = statemod.State()
+        self.window: TimeyWindow | None = None
+        self._tick_source: int | None = None
+        self._tick_count = 0
+        self._autostart_checked = False
 
+        self.connect("activate", self._on_activate)
+        self.connect("shutdown", self._on_shutdown)
+
+        # Lets notification clicks raise the window.
+        open_action = Gio.SimpleAction.new(
+            "open-window", GLib.VariantType.new("s")
+        )
+        open_action.connect("activate", self._on_open_window)
+        self.add_action(open_action)
+
+    # ── lifecycle ────────────────────────────────────────────────────
     def _on_activate(self, app: Adw.Application) -> None:
-        window = self.props.active_window
+        if self.window is None:
+            # First activation: build everything, honour --hidden.
+            self.state = statemod.State.load()
+            self._ensure_autostart_consistent()
+            self.window = TimeyWindow(self)
+            self._start_tick()
+            if self._start_hidden:
+                self.window.hide()
+                return
+        # Any later activation means the user asked for Timey — raise it,
+        # even if it was running hidden in the background.
+        self.window.present()
+        self.window._refresh_stopwatch()
+
+    def _on_open_window(self, _action, _parameter) -> None:
+        window = self.window
         if window is None:
-            window = TimeyWindow(app=app, prefs=Prefs.load())
+            self._on_activate(self)
+            return
         window.present()
+        window._refresh_stopwatch()
+
+    def _on_shutdown(self, *_args) -> None:
+        if self._tick_source is not None:
+            GLib.source_remove(self._tick_source)
+            self._tick_source = None
+        self.save_state()
+
+    def _start_tick(self) -> None:
+        if self._tick_source is None:
+            self._tick_source = GLib.timeout_add(TICK_MS, self._tick)
+
+    def _tick(self) -> bool:
+        state = self.state
+        self._tick_count += 1
+
+        # Countdowns that finished this tick.
+        finished = [cd for cd in state.timers if cd.is_running() and cd.update()]
+        for countdown in finished:
+            self._alert_timer_finished(countdown)
+            if self.window is not None:
+                self.window.on_timer_finished(countdown)
+
+        # Alarms that went off this tick.
+        armed = [a for a in state.alarms if a.enabled and a.next_fire is not None]
+        if armed:
+            moment = alarm_now()
+            for alarm in armed:
+                if alarm.check(moment):
+                    self._alert_alarm_fired(alarm)
+                    state.sort_alarms()
+                    if self.window is not None:
+                        self.window.on_alarm_fired(alarm)
+
+        if self.window is not None:
+            self.window.on_tick()
+
+        # Persist running engines a few times per minute so a crash or
+        # reboot loses at most a few seconds of progress.
+        running = state.stopwatch.is_running() or any(
+            cd.is_running() for cd in state.timers
+        )
+        if running and self._tick_count % AUTOSAVE_TICKS == 0:
+            self.save_state()
+        return True
+
+    # ── alerts ───────────────────────────────────────────────────────
+    def _alert_timer_finished(self, countdown: Countdown) -> None:
+        label = countdown.name if countdown.name else "Timer"
+        alerts.timer_alert(self, f"timey-timer-{label}", countdown.name, self.state.sound)
+
+    def _alert_alarm_fired(self, alarm: Alarm) -> None:
+        alerts.alarm_alert(self, f"timey-alarm-{alarm.uid}", alarm.name, self.state.sound)
+
+    # ── persistence / background ─────────────────────────────────────
+    def save_state(self) -> None:
+        self.state.save()
+
+    def set_background_enabled(self, enabled: bool) -> None:
+        self.state.background = bool(enabled)
+        self.save_state()
+        self._sync_autostart()
+
+    def _ensure_autostart_consistent(self) -> None:
+        if self._autostart_checked:
+            return
+        self._autostart_checked = True
+        self._sync_autostart()
+
+    def _sync_autostart(self) -> None:
+        if self.state.background:
+            self._write_autostart()
+        else:
+            self._remove_autostart()
+
+    def _autostart_dir(self) -> Path:
+        return env.xdg_config_home() / "autostart"
+
+    def _resolve_background_command(self) -> list[str]:
+        """Command line that launches Timey hidden at login.
+
+        Prefers the launcher installed by install.sh (which exports
+        ``TIMEY_LAUNCHER``), falls back to a checkout wrapper script so
+        development installs work too.
+        """
+        launcher = os.environ.get("TIMEY_LAUNCHER")
+        if launcher and Path(launcher).is_file():
+            return [launcher, "--hidden"]
+
+        pkg = Path(__file__).resolve()
+        # Installed layout: <prefix>/lib/timey/timey/app.py
+        if len(pkg.parents) > 3 and pkg.parents[2].name == "lib":
+            candidate = pkg.parents[3] / "bin" / "timey"
+            if candidate.is_file():
+                return [str(candidate), "--hidden"]
+
+        checked = shutil.which("timey")
+        if checked:
+            return [checked, "--hidden"]
+
+        # Development checkout: generate a small wrapper we control.
+        wrapper = env.config_dir() / "run-hidden.sh"
+        repo = pkg.parents[1]
+        try:
+            wrapper.parent.mkdir(parents=True, exist_ok=True)
+            wrapper.write_text(
+                "#!/bin/sh\n"
+                f"cd {shlex.quote(str(repo))} || exit 1\n"
+                "export PYTHONPATH="
+                f"{shlex.quote(str(repo))}${{PYTHONPATH:+:$PYTHONPATH}}\n"
+                f"exec {shlex.quote(sys.executable)} -m timey --hidden\n",
+                encoding="utf-8",
+            )
+            wrapper.chmod(0o755)
+            return [str(wrapper)]
+        except OSError:
+            return [sys.executable, "-m", "timey", "--hidden"]
+
+    def _write_autostart(self) -> None:
+        directory = self._autostart_dir()
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            return
+        command = " ".join(shlex.quote(part) for part in self._resolve_background_command())
+        entry = (
+            "[Desktop Entry]\n"
+            "Type=Application\n"
+            "Name=Timey (background)\n"
+            "Comment=Keeps Timey alarms and timers running at login\n"
+            f"Exec={command}\n"
+            "Terminal=false\n"
+            "NoDisplay=true\n"
+            "X-GNOME-Autostart-enabled=true\n"
+        )
+        try:
+            (directory / "timey-background.desktop").write_text(entry, encoding="utf-8")
+        except OSError:
+            pass
+
+    def _remove_autostart(self) -> None:
+        try:
+            (self._autostart_dir() / "timey-background.desktop").unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def main(argv: list[str] | None = None) -> int:
     """Entry point: load local environment and run the GTK application."""
+    args = list(argv if argv is not None else sys.argv)
     env.load_env_files()
-    app = TimeyApplication()
-    return app.run(argv if argv is not None else sys.argv)
+    start_hidden = "--hidden" in args
+    if start_hidden:
+        args.remove("--hidden")
+    app = TimeyApplication(start_hidden=start_hidden)
+    return app.run(args)

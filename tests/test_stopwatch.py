@@ -119,5 +119,44 @@ class StopwatchTests(unittest.TestCase):
         self.assertAlmostEqual(self.sw.elapsed(), 1.0)
 
 
+class PersistenceTests(unittest.TestCase):
+    def test_idle_round_trip(self) -> None:
+        watch = Stopwatch()
+        restored = Stopwatch.from_state(watch.save_state(wall=1000.0), wall=1010.0)
+        self.assertTrue(restored.is_idle())
+        self.assertEqual(restored.elapsed(), 0.0)
+        self.assertEqual(restored.lap_count, 0)
+
+    def test_paused_keeps_elapsed_and_laps(self) -> None:
+        data = {
+            "state": "paused",
+            "elapsed": 42.5,
+            "laps": [
+                {"index": 1, "total": 20.0, "split": 20.0},
+                {"index": 2, "total": 42.5, "split": 22.5},
+            ],
+        }
+        restored = Stopwatch.from_state(data, wall=1.0)
+        self.assertTrue(restored.is_paused())
+        self.assertAlmostEqual(restored.elapsed(), 42.5)
+        self.assertEqual(restored.lap_count, 2)
+
+    def test_left_running_keeps_counting_across_restart(self) -> None:
+        # Saved at wall=1000 with 10 s elapsed; reopened 15 s later.
+        data = {"state": "running", "elapsed": 10.0, "laps": [], "wall": 1000.0}
+        restored = Stopwatch.from_state(data, wall=1015.0)
+        self.assertTrue(restored.is_running())
+        self.assertAlmostEqual(restored.elapsed(), 25.0, delta=0.01)
+
+    def test_laps_survive_round_trip(self) -> None:
+        data = {
+            "state": "paused",
+            "elapsed": 5.0,
+            "laps": [{"index": 1, "total": 5.0, "split": 5.0}],
+        }
+        restored = Stopwatch.from_state(data)
+        self.assertEqual(restored.laps, [{"index": 1, "total": 5.0, "split": 5.0}])
+
+
 if __name__ == "__main__":
     unittest.main()

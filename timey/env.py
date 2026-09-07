@@ -11,17 +11,27 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-__all__ = ["load_env_files", "get", "env_file_paths"]
+__all__ = ["load_env_files", "get", "env_file_paths", "config_dir", "xdg_config_home"]
+
+
+def xdg_config_home() -> Path:
+    """Base config directory (``$XDG_CONFIG_HOME`` or ``~/.config``)."""
+    return Path(os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config"))
+
+
+def config_dir() -> Path:
+    """Timey's own config directory."""
+    return xdg_config_home() / "timey"
 
 
 def _config_dir() -> Path:
-    base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
-    return Path(base) / "timey"
+    """Deprecated alias kept for internal callers."""
+    return config_dir()
 
 
 def env_file_paths() -> list[Path]:
     """Locations probed for ``.env`` files, in load order."""
-    candidates = [Path.cwd() / ".env", _config_dir() / ".env"]
+    candidates = [Path.cwd() / ".env", config_dir() / ".env"]
     seen: set[Path] = set()
     paths: list[Path] = []
     for path in candidates:

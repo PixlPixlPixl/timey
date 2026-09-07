@@ -105,6 +105,59 @@ class Stopwatch:
         self._last_lap_total = 0.0
         self._laps.clear()
 
+    # ── persistence ──────────────────────────────────────────────────
+    def save_state(self, wall: float | None = None) -> dict[str, object]:
+        """Serializable snapshot, as of now.
+
+        ``wall`` is a wall-clock ``time.time()`` stamp, stored while the
+        stopwatch is running so a restore can keep counting across an app
+        restart (laps are included in the snapshot).
+        """
+        if wall is None:
+            wall = time.time()
+        data: dict[str, object] = {
+            "state": self._state,
+            "elapsed": self.elapsed(),
+            "laps": [dict(lap) for lap in self._laps],
+        }
+        if self._state == RUNNING:
+            data["wall"] = wall
+        return data
+
+    @classmethod
+    def from_state(cls, data: dict, wall: float | None = None) -> "Stopwatch":
+        """Rebuild a stopwatch from :meth:`save_state`.
+
+        A stopwatch that was left running keeps running: the time elapsed
+        while the app was closed is added before it resumes from now.
+        """
+        if wall is None:
+            wall = time.time()
+        watch = cls()
+        state = data.get("state", IDLE)
+        elapsed = max(0.0, float(data.get("elapsed", 0.0)))
+        laps_raw = data.get("laps") or []
+        laps = [
+            {
+                "index": int(lap["index"]),
+                "total": float(lap["total"]),
+                "split": float(lap["split"]),
+            }
+            for lap in laps_raw
+            if isinstance(lap, dict)
+        ]
+        watch._laps = laps
+        watch._last_lap_total = laps[-1]["total"] if laps else 0.0
+        watch._accumulated = elapsed
+        if state == RUNNING:
+            anchor = float(data.get("wall") or wall)
+            watch._accumulated += max(0.0, wall - anchor)
+            watch._state = RUNNING
+            watch._started_at = watch._now()  # carry on from here
+        elif state == PAUSED:
+            watch._state = PAUSED
+        return watch
+
     # ── internals ────────────────────────────────────────────────────
     def _running_time(self) -> float:
         return self._now() - self._started_at

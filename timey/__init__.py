@@ -1,3 +1,3 @@
-"""Timey — a grayscale stopwatch for the Linux desktop."""
+"""Timey — a grayscale stopwatch, timers, alarms & world clock."""
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
