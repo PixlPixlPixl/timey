@@ -1,4 +1,4 @@
-# Timey ⏱
+# Timey
 
 A deliberately **grayscale** stopwatch **and multi-countdown timer** for the
 Linux desktop — built with Python, GTK 4 and Libadwaita. Dark mode by
@@ -14,7 +14,7 @@ default, with a one-click toggle for light mode.
   name, live progress bar, and fires a desktop notification when finished
 - **Grayscale styling** in both color schemes — the palette is injected at
   runtime, so the app stays neutral even where accent colors aren't supported
-- **Dark mode by default** with a persistent dark ⇄ light toggle
+- **Dark mode by default** with a persistent dark/light toggle
 - About dialog links straight to the **Github** repository
 - Preferences persisted to `~/.config/timey/config.ini` (no GSettings
   schema needed to run from a checkout)
@@ -83,7 +83,7 @@ and remembered on the next launch.
 Local overrides and (future) secrets live in a `.env` file which is
 **gitignored** — it can never be committed:
 
-- Copy `.env.example` → `.env` and fill in your own values.
+- Copy `.env.example` to `.env` and fill in your own values.
 - Supported keys today: `TIMEY_THEME=dark|light` (first-launch theme).
 - `.env` is searched in the current working directory and in
   `~/.config/timey/.env`. Values already present in your shell

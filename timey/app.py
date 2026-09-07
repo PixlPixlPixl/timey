@@ -206,7 +206,7 @@ class TimeyWindow(Adw.ApplicationWindow):
         # Two tools: the stopwatch and the (multi) countdown timers.
         self.stack = Adw.ViewStack()
         self.stack.add_titled(self._build_stopwatch_page(), "stopwatch", "Stopwatch")
-        self.stack.add_titled(self._build_timers_page(), "timers", "Timers")
+        self.stack.add_titled(self._build_timers_page(), "timers", "Timer")
 
         switcher = Adw.ViewSwitcher(stack=self.stack)
         header.set_title_widget(switcher)
@@ -253,7 +253,7 @@ class TimeyWindow(Adw.ApplicationWindow):
         self.time_label.set_valign(Gtk.Align.CENTER)
         body.append(self.time_label)
 
-        hint_label = Gtk.Label(label="Space start/pause   ·   L lap   ·   R reset")
+        hint_label = Gtk.Label(label="Space start/pause   |   L lap   |   R reset")
         hint_label.add_css_class("timey-hint")
         hint_label.set_halign(Gtk.Align.CENTER)
         body.append(hint_label)
@@ -318,7 +318,7 @@ class TimeyWindow(Adw.ApplicationWindow):
         page.set_margin_start(28)
         page.set_margin_end(28)
 
-        intro = Gtk.Label(label="RUN SEVERAL COUNTDOWNS AT ONCE — OR PAUSE AND COME BACK")
+        intro = Gtk.Label(label="RUN SEVERAL COUNTDOWNS AT ONCE, OR PAUSE AND COME BACK")
         intro.add_css_class("timey-hint")
         intro.set_halign(Gtk.Align.CENTER)
         intro.set_margin_bottom(16)
@@ -349,8 +349,8 @@ class TimeyWindow(Adw.ApplicationWindow):
         scroller.set_child(self.timers_box)
 
         self.timers_empty = Gtk.Label(
-            label="No timers yet\n\nClick “Add Timer” to start one — you can "
-                  "run as many at once as you like."
+            label="No timers yet\n\n"
+                  'Click "Add Timer" to start one. You can run as many at once as you like.'
         )
         self.timers_empty.add_css_class("timey-empty")
         self.timers_empty.set_justify(Gtk.Justification.CENTER)
@@ -447,7 +447,7 @@ class TimeyWindow(Adw.ApplicationWindow):
         if app is None:
             return
         label = countdown.name if countdown.name else "Timer finished"
-        notification = Gio.Notification.new(f"{APP_NAME} — {label}")
+        notification = Gio.Notification.new(f"{APP_NAME} - {label}")
         notification.set_body("Countdown complete")
         app.send_notification("timey-countdown-finished", notification)
 
